@@ -1,0 +1,725 @@
+---
+title: "CMSC320 Final Project: Colorado Elderly Care Home Database Scraping and Analysis"
+author: "Jacob Bunker"
+date: "5/12/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+
+  Each any every one of us will at a point late in our lives contemplate a move to a retirement home, or the need to help our elderly parents find a retirement home. 
+  
+  But which one to choose?
+  
+  Lets take a look at the Canterbury Gardens, an licensed assisted living and memory care home with a capacity for up to 120 residents.
+  
+![](canturbury.png)
+  
+  Looking good. Their advertisement video has a professional voiceover, a panning drone arial view, and shots of clean living areas with game tables. Their blurb assures us that we will find a warm, dedicated staff *committed* to creating a community you will be delighted to call home.
+
+  Would you want to live there?
+
+  What if I told you that in 7/28/2014 it was found that the kitchen had been swarming with cockroaches for up to six months, that the staff weren't using disinfectant to clean the tables, that dead, bloated mice were left in traps for days on end, that crates of rotten and moldy potatos and onions covered in cockroaches had been taken from to make the lunch served the *very day* the inspector arrived? That residents had been reporting being served cold food on sticky, greasy tables. That interviewed staff sobbed while retelling how they were unable to solve the problem and had cockroaches crawling up their arms while doing dishes because the administrator wouldn't pay the exterminator company. That similar sanitation issues had been cited in a 2013 health survey, and that while corrective actions were taken this location has remained licensed and there is no indication that the administator in charge was fired. The kinds of cost-cutting behavior that led to this state of affairs is seen repeated in a recent survey conducted in 2016.
+  
+  It's all detailed within this report:
+  http://www.hfemsd2.dphe.state.co.us/hfd2003/dtl3.aspx?tg=0706&eid=UTSS11&ft=pcbhpp&id=2304B1&bdg=00&reg=ALR6
+
+  Would you still want to live there? I wouldn't. However a cursory search of Canterbury Gardens online won't tell you that this ever happened. It's only by looking through the Colorado Department of Public Health and Environment's database while employed at a company that specializes in elder care that I ever discovered this had occured.
+
+  In this database you can find some of the worst snapshots of human misery imaginable. People dying covered in their own diarrhea after hours of violent illness because a staff member didn't want to help clean them or think to call for medical assistance. People being sexually and physically abused by other residents and told to shut up or called liars when trying to report it to staff. A person catching fire and dying because a staff member let them smoke while they had an oxygen mask on. It's grotesque and horrible stuff that people should have a right to know about when they are looking for a place they or their love ones can live when they're too old to take care of themselves, but this information unfortunately is in a nondescript state database.
+
+  In this tutorial I will be scraping and conducting surface-level analyses of the Colorado Department of Public Health and Environment's database for licensed elderly care homes. I will also be creating a leaflet map which will allow anyone to click on elderly home locations and review the survey data on the location. 
+  
+  This database includes roughly 650 locations and has for each location information including the number of beds licensed for that location, the type of ownership the location has, the address of the location, the phone number of the location, and the number of branches the location has. Of most interest to us, this database has a record of every public health survey that the state has conducted on each individual location. These surveys include incident reports/citations that each have a severity/scope rating as well as the written report of the citations themselves.
+  
+
+  This tutorial will be split into three sections:
+  
+  **Section 1: The Big Scrape**
+      In this section I will be scraping the multi-layered database and gathering the results into three tables- the first for locations, the second for surveys, and the third for individual incidents. 
+      
+  **Section 2: Tidying and Analysis**
+      In this section I will be tidying up the data results and conducting a linear regression analysis as well as plotting relationships.
+    
+  **Section 3: Location Map with Leaflet**
+      In this section I will be creating a leaflet map which will display locations that can be clicked to find out their specifications.
+      
+  
+  
+
+##**Section 1: The Big Scrape**
+
+  To start we will need our toolkit. In this tutorial I will be using a package called 'webdriver' and a browser driver called 'phantomjs'. This will be installed in the following code block. We will also initialize our crawler.
+
+```{r initialize, results='hide', warning=FALSE, collapse=TRUE}
+library(rvest)
+library(tidyverse)
+require(webdriver)
+
+install_phantomjs()
+pjs <- run_phantomjs()
+ses <- Session$new(port = pjs$port)
+```
+
+
+  By directing our crawler to the url of the database we can find the following screen:
+```{r get_to_homepage}
+url <- "http://www.hfemsd2.dphe.state.co.us/hfd2003/homebase.aspx?Ftype=pcbhpp&Do=srch"
+ses$go(url)
+ses$takeScreenshot()
+```
+  This is the top level of the database, however this page is merely a gate behind which we can find the tasty data we are looking for. In order to pass this gate we will be clicking the "Start Search" button with the following code block.
+
+```{r click_start_search}
+search <- ses$findElement("#SubmitCriteria")
+search$sendKeys("", key$enter)
+searchlink <- ses$getUrl()
+```
+
+  Now we should be seeing the following:
+![](topscreenshot.png)
+
+  The full screenshot it too large to show, but it extends several pages down. This page contains a table with links to every location in the database.
+
+  We will now scrape each of the elements in this table and get their href attributes. This will allow us to have links and names for every location in the database.
+
+```{r the_big_scrape_1_a}
+
+facilityList <- ses$findElement("#Faclist")
+locations <- facilityList$findElements("a")
+
+df <- data.frame(Doubles=double(),
+                 Ints=integer(),
+                 Factors=factor(),
+                 Logicals=logical(),
+                 Characters=character(),
+                 stringsAsFactors=FALSE)
+hrefs <- c()
+names <- c()
+
+z <- 1
+while(z <= length(locations)) {
+  hrefs[[z]] <- locations[[z]]$getAttribute("href")
+  names[[z]] <- locations[[z]]$getText()
+  z <- z + 1
+}
+
+print(length(hrefs))
+```
+
+  Our scrape picked up 704 locations in the database. Upon investigation one can find that around fifty of these are links to the same page. This is because some locations have unique names for different branches, however they are given the same unique ID within the database, and surveys are conducted for the this unique entity. Later we will eliminiate these duplicates.
+
+  Next we will be looking under the hood of the links we have gathered. For example, here is the page for the first location in our database:
+```{r screenshot}
+ses$go(hrefs[1])
+ses$takeScreenshot()
+```
+
+  We can see here that there are three different sections of interest. The top section includes all of the general information about the location. This location is called 'A DOCTOR'S TOUCH LLC'. It is administated by a Mr. Hearald Ostovar, it has eight licensed beds - a small location - and it's ownership type is 'limited liability'. 
+  The second section is titled 'Occurences'. This includes a list of every time a report was made by the location itself regarding an incident. Picking out a few occurences at random under this link I could find reports of a fight between residents, an unsolved petty theft, and an account of a resident with dementia picked up by police wandering around a Wallgreens. Unfortunately these occurences are not given any rating, and we will be leaving them out of this tutorial.
+  The third section contains the meat of the database. The health surveys conducted by government employees. These surveys are conducted either to reaffirm the licensability of the location or in response to reports received about mismanagement or mistreatment at the facility. They are broken into two types- 'Health Surveys', and 'Life Safety Surveys'. Both of these survey types have the same format, and so we will be compiling them into the same table, but within the HTML they are listed in different tables.
+  
+  In the following code block we will be going through each location link and scraping the dates and href links of each health or life-safety survey at each location.
+
+```{r the_big_scrape_2}
+
+library(foreach)
+
+snames <- c() #health survey location names
+lsnames <- c() #life survey location names
+
+accessTimes <- c() #the time at which this page was accessed by our scraper
+demographies <- c() #addresses, phone numbers, etc
+occurrencesHrefs <- c() #the links to the occurences page
+occurrencesTexts <- c()
+
+healthSurveyCount <- c() #the number of health surveys per location
+healthSurveysHrefs <- c() #the links to each health survey
+healthSurveysDates <- c() #the dates of each health survey
+
+lifeSafetySurveyCount <- c() #the number of life safety surveys per location
+lifeSafetySurveyHrefs <- c() #the links to each life safety survey
+lifeSafetySurveyDates <- c() #the dates of each life safety survey
+
+
+z <- 1
+while(z <= length(locations)) {
+  
+  url <- hrefs[[z]]
+  ses$go(url)
+  
+  datetime <- ses$findElement("#HeaderDetail_DisplayDateTime")
+  datetime <- datetime$getText()
+  accessTimes[[z]] <- datetime
+  
+  demography <- ses$findElement("#DemogData")
+  demography <- demography$getText()
+  demographies[[z]] <- demography
+  
+  occurrences <- ses$findElement("#OccData")
+  occurrencesHref <- occurrences$findElements("a")
+  occurrencesHref <- occurrencesHref[[1]]$getAttribute("href")
+  occurrencesHrefs <- occurrencesHref
+  
+  occurrencesText <- occurrences$getText()
+  occurrencesTexts[[z]] <- occurrencesText
+  
+  surveysTab <- ses$findElement('#SurvTab')
+  
+  healthSurveys <- surveysTab$findElement('#SurvHealth')
+  healthSurveys <- healthSurveys$findElements('a')
+  
+  foreach(i=healthSurveys) %do%  {healthSurveysHrefs <- c(healthSurveysHrefs, i$getAttribute("href"))}
+  foreach(i=healthSurveys) %do%  {healthSurveysDates <- c(healthSurveysDates, i$getText())}
+  foreach(i=healthSurveys) %do%  {snames <- c(snames, names[[z]])}
+  healthSurveyCount[[z]] <- length(healthSurveys)
+
+  SurvLSC <- surveysTab$findElement('#SurvLSC')
+  lifeSafetySurveys <- SurvLSC$findElements('a')
+
+  foreach(i=lifeSafetySurveys) %do%  {lifeSafetySurveyHrefs <- c(lifeSafetySurveyHrefs, i$getAttribute("href"))}
+  foreach(i=lifeSafetySurveys) %do%  {lifeSafetySurveyDates <- c(lifeSafetySurveyDates, i$getText())}
+  foreach(i=lifeSafetySurveys) %do%  {lsnames <- c(lsnames, names[[z]])}
+  lifeSafetySurveyCount[[z]] <- length(lifeSafetySurveys)
+
+  z <- z + 1
+}
+
+print(sum(lifeSafetySurveyCount) + sum(healthSurveyCount))
+```
+  We have now scraped around 3150 different health and life safety surveys.
+
+  Now that we have the links to each survey, we will need to scrape the incidents recorded within each survey.
+A typical survey page looks like this:
+
+```{r screen_shot_2}
+ses$go(healthSurveysHrefs[4])
+ses$takeScreenshot()
+```
+
+  Above you can see the health survey conducted for 'CANTERBURY GARDENS INDEPENDENT AND ASSISTED LIVING' performed on 9/16/2015. Each survey has an initial comments section- surveys that find nothing wrong will have an initial comments section and nothing else. There are three citations for this survey. The table contains four rows- one for the summary of the regulation cited, one for the scope of the problem, one for the severity of the problem, and a column with a letter grade for the scope/severity of the problem. We will be collecting the values within each of these columns for each row.
+
+  The letter rating has a common relationship with the severity:
+  
+Potential harm to the resident(s)   - A/B
+Actutal harm to the resident(s)     - C/D
+Life threatening to the resident(s) - E
+
+  Wherein a citation for 'Actutal harm to the resident(s)' that only affects a couple residents will receive a 'C' grade, whereas one that affects many residents will receive a 'D' grade.
+
+  In the following code block we will be going through each survey link and collecting the information about the incident reports.
+
+```{r the_big_scrape_3}
+
+incidentSurveyIDs <- c() #the names of the locations that the survey/incident was conducted at
+incidentCount <- c() #number of incidents per survey
+
+reportHrefs <- c() #link to the incident report
+reportTitles <- c() #title of the incident report
+
+reportScopes <- c() #scope of the incident
+reportSeverities <- c() #severity of the incident
+reportLevels <- c() #grade level of the incident
+reportDates <- c() #date of the incident report
+
+incidentType <- c() #initial comment, health survey incident, or life safety incident
+
+z <- 1
+while(z <= length(healthSurveysHrefs)) {
+  incidentSurveyID <- snames[[z]]
+  reportDate <- healthSurveysDates[[z]]
+  ses$go(healthSurveysHrefs[[z]])
+  
+  incidentTable <- ses$findElement("#TagList")
+  incidentTableRows <- incidentTable$findElements('tr')
+  incidentTableRows[[1]] <- NULL
+  incidentCount[[z]] <- length(incidentTableRows) - 1
+  
+  z1 <- 1
+  while(z1 <= length(incidentTableRows)) {
+    report <- incidentTableRows[[z1]]$findElement('a')
+    reportHrefs <- c(reportHrefs, report$getAttribute("href"))
+    reportTitles <- c(reportTitles, report$getText())
+    
+    columns <- incidentTableRows[[z1]]$findElements('td')
+    reportScopes <- c(reportScopes, columns[[2]]$getText())
+    reportSeverities <- c(reportSeverities, columns[[3]]$getText())
+    reportLevels <- c(reportLevels, columns[[4]]$getText())
+    incidentSurveyIDs <- c(incidentSurveyIDs, incidentSurveyID)
+    reportDates <- c(reportDates, reportDate)
+    
+    if(z1 == 1) {
+      incidentType <- c(incidentType ,"Initial Comment")
+    } else
+    {
+      incidentType <- c(incidentType ,"Health Survey Report")
+    }
+    
+    z1 <- z1 + 1
+  }
+  z <- z + 1
+}
+
+z <- 1
+while(z <= length(lifeSafetySurveyHrefs)) {
+  incidentSurveyID <- lsnames[[z]]
+  reportDate <- lifeSafetySurveyDates[[z]]
+  ses$go(lifeSafetySurveyHrefs[[z]])
+  
+  incidentTable <- ses$findElement("#TagList")
+  incidentTableRows <- incidentTable$findElements('tr')
+  incidentTableRows[[1]] <- NULL
+  incidentCount[[z]] <- length(incidentTableRows) - 1
+  
+  z1 <- 1
+  while(z1 <= length(incidentTableRows)) {
+    report <- incidentTableRows[[z1]]$findElement('a')
+    reportHrefs <- c(reportHrefs, report$getAttribute("href"))
+    reportTitles <- c(reportTitles, report$getText())
+    
+    columns <- incidentTableRows[[z1]]$findElements('td')
+    reportScopes <- c(reportScopes, columns[[2]]$getText())
+    reportSeverities <- c(reportSeverities, columns[[3]]$getText())
+    reportLevels <- c(reportLevels, columns[[4]]$getText())
+    incidentSurveyIDs <- c(incidentSurveyIDs, incidentSurveyID)
+    reportDates <- c(reportDates, reportDate)
+    
+    if(z1 == 1) {
+      incidentType <- c(incidentType ,"Initial Comment")
+    } else
+    {
+      incidentType <- c(incidentType ,"Life Safety Report")
+    }
+    
+    z1 <- z1 + 1
+  }
+  z <- z + 1
+}
+
+
+#create the data frames out of the disparate lists.
+
+locationsdf <- data.frame(names <- names, 
+                 tophrefs <- hrefs, 
+                 demographies <- demographies,
+                 occurencesHrefs <- occurrencesHrefs,
+                 occurencesTexts <- occurrencesTexts,
+                 healthSurveyCount <- healthSurveyCount,
+                 lifeSafetySurveyCount <- lifeSafetySurveyCount,
+                 accessTimes <- accessTimes,
+                 stringsAsFactors = FALSE)
+
+healthsurveydf <- data.frame(location <- snames, 
+                 healthSurveysDates <- healthSurveysDates,
+                 healthSurveysHrefs <- healthSurveysHrefs,
+                 incidentCount <- incidentCount,
+                 stringsAsFactors = FALSE)
+
+incidentdf <- data.frame(location <- incidentSurveyIDs, 
+                  incidentType <- incidentType,
+                  reportTitles <- reportTitles,
+                  reportScope <- reportScopes,
+                  reportSeverity <- reportSeverities,
+                  reportLevels <- reportLevels,
+                  reportDates <- reportDates,
+                  reportHrefs <- reportHrefs,
+                  stringsAsFactors = FALSE)
+```
+
+  At this point we have now scraped all of the information that we will be gathering from this database for this tutorial. All of the incidents have been recorded and stored within our new data frames.
+
+##**Section 2: Tidying and Analysis**
+
+  In the following code block we will be tidying up the data through a series of steps which will make it easier to analyze.
+
+```{r tidy_1}
+
+incidents <- filter(incidentdf, reportLevels != '') #filter out initial reports
+locations <- locationsdf
+surveys <- healthsurveydf
+
+
+z <- 1
+while(z <= nrow(locations)) {
+  locations[z,'id'] <- (strsplit((strsplit(locations[z,'tophrefs....hrefs'], "id="))[[1]][2], "&ft="))[[1]][1]
+  z <- z + 1 #extract unique location ids from href link
+}
+
+locations <- locations[!duplicated(locations$id), ]
+#get rid of the duplicate locations, ex: locations with multiple branches under different names
+
+incidents <- incidents[!duplicated(incidents$reportHrefs....reportHrefs), ]
+#get rid of the duplicate incidents, ex: incidents reported in multiple branches of same location
+
+z <- 1
+while(z <= nrow(incidents)) {
+  incidents[z,'id'] <- (strsplit((strsplit(incidents[z,'reportHrefs....reportHrefs'], "pcbhpp&id="))[[1]][2], "&bdg="))[[1]][1]
+  z <- z + 1
+} #extract location id for each incident to create matching identifier
+
+
+z <- 1
+while(z <= nrow(locations)) {
+  temp <- (strsplit((strsplit(locations[z,'demographies....demographies'], "Ownership type: "))[[1]][2], "\nOmbudsman Phone:"))[[1]][1]
+  temp <- (strsplit(temp, "\nCurrent ownership effective"))[[1]][1]
+  locations[z,'ownership'] <- temp
+  z <- z + 1
+} #extract location ownership type
+
+z <- 1
+while(z <= nrow(locations)) {
+  temp <- (strsplit((strsplit(locations[z,'demographies....demographies'], "Licensed Beds: "))[[1]][2], "\nOwnership type: "))[[1]][1]
+  temp <- (strsplit(temp, "\nSecured Beds: "))[[1]][1]
+  locations[z,'beds'] <- as.numeric(temp)
+  z <- z + 1
+} #extract licensed bed count
+
+
+incidents <- incidents %>%
+  type_convert(col_types = cols(
+      reportDates....reportDates = col_datetime(format = "%m/%d/%Y")
+    ),
+    na = c("", "NA"),
+    locale = default_locale(),
+    trim_ws = TRUE
+  ) #transform into datetime format
+
+tm1 <- as.POSIXct("2014-05-18") #four years from the day this project was uploaded.
+
+z <- 1
+while(z <= nrow(locations)) {
+  target <- locations[z, "id"]
+  targetincidents <- filter(incidents, id==target, reportDates....reportDates > tm1) 
+  #filter out reports which occurred more than four years ago to get a more accurate look at the current state of the location
+  
+  Acount <- nrow(filter(targetincidents, reportLevels....reportLevels=="A"))
+  Bcount <- nrow(filter(targetincidents, reportLevels....reportLevels=="B"))
+  Ccount <- nrow(filter(targetincidents, reportLevels....reportLevels=="C"))
+  Dcount <- nrow(filter(targetincidents, reportLevels....reportLevels=="D"))
+  Ecount <- nrow(filter(targetincidents, reportLevels....reportLevels=="E"))
+  
+  locations[z, 'A'] <- as.numeric(Acount)
+  locations[z, 'B'] <- as.numeric(Bcount)
+  locations[z, 'C'] <- as.numeric(Ccount)
+  locations[z, 'D'] <- as.numeric(Dcount)
+  locations[z, 'E'] <- as.numeric(Ecount)
+  
+  z <- z + 1
+}
+
+head(locations)
+head(incidents)
+
+```
+
+  Now let's figure out how many different reports there are for at each grade level. This will be important in order for us to figure out of it's reasonable to attempt to look for significant relationships between certain properties, and, for example, grade E severity reports.
+
+```{r tidy_2}
+
+ratings <- c(sum(locations$A), sum(locations$B), sum(locations$C), sum(locations$D), sum(locations$E))
+ratings <- as.data.frame(ratings)
+ratings$letter <- c('A', 'B', 'C', 'D', 'E')
+#ratings[order(ratings$ratings),c(1,2)]
+ratings
+
+#df_uniq <- unique(select(locations, ownership))
+#df_uniq
+
+ownershipcount <- c()
+ownershipcount <- c(ownershipcount, nrow(filter(locations, ownership == 'LIMITED LIABILITY')))
+ownershipcount <- c(ownershipcount, nrow(filter(locations, ownership == 'PROFIT-CORPORATION')))
+ownershipcount <- c(ownershipcount, nrow(filter(locations, ownership == 'LIMITED PARTNERSHIP')))
+ownershipcount <- c(ownershipcount, nrow(filter(locations, ownership == 'INDIVIDUAL')))
+ownershipcount <- c(ownershipcount, nrow(filter(locations, ownership == 'PARTNERSHIP')))
+ownershipcount <- c(ownershipcount, nrow(filter(locations, ownership == 'CORPORATE NON-PROFIT')))
+ownershipcount <- c(ownershipcount, nrow(filter(locations, ownership == 'DISTRICT')))
+ownershipcount <- c(ownershipcount, nrow(filter(locations, ownership == 'CITY-COUNTY')))
+ownershipcount <- c(ownershipcount, nrow(filter(locations, ownership == 'NA')))
+
+counts <- as.data.frame(ownershipcount)
+counts$names <- c('LIMITED LIABILITY', 'PROFIT-CORPORATION', 'LIMITED PARTNERSHIP', 'INDIVIDUAL', 'PARTNERSHIP', 'CORPORATE NON-PROFIT','DISTRICT', 'CITY-COUNTY', 'NA')
+counts[order(counts$ownershipcount),c(1,2)]
+```
+
+  It looks like there is only a small number of grade D and E reports. We will need to take this into account when looking at analysis of the frequency of these grade level reports. Furthermore the vast majority of locations are of the type 'CORPORATE NON-PROFIT', 'PROFIT-CORPORATION', and 'LIMITED LIABILITY' ownership.
+
+  In order to get a better analyis of the data I think it would be beneficial to group all of the other types of ownership into a single category of "OTHER", rather than simply dropping them from the analysis altogether.
+
+```{r tidy_3}
+
+locations$ownership[locations$ownership == "PARTNERSHIP" |
+                      locations$ownership == "INDIVIDUAL" |
+                      locations$ownership == "LIMITED PARTNERSHIP" |
+                      locations$ownership == "CITY-COUNTY" |
+                      locations$ownership == "DISTRICT"] <- "OTHER"
+
+```
+
+  Now we will be conducting a series of analysis to see if there is any relation between the number of beds at a location, it's ownership, and the number and severity grade of the citation reports it has received in the past four years. For this I will employing a linear regression model.
+
+```{r analysis_1}
+require(ggplot2)
+library(dplyr)
+library(rvest)
+library(tidyverse)
+library(scales)
+library(gapminder)
+require(broom)
+
+lm_A <- lm(A~beds+factor(ownership), data=locations)
+tidy(lm_A)
+
+lm_B <- lm(B~beds+factor(ownership), data=locations)
+tidy(lm_B)
+
+lm_C <- lm(C~beds+factor(ownership), data=locations)
+tidy(lm_C)
+
+#filter(recentIncidents, reportLevels....reportLevels == 'C')
+
+```
+
+  These results appear to show that there is very little to no noticable relationship between the number of beds a location has and the amount of reports it receives of any grade, disproving a suspicion I had previously that smaller locations tended to have more problems.
+  
+  Of much higher and more consequence is the seemingly high relation between the type of ownership of a location and the frequence of A, B, and C reports. These seem quite statistically significant- let us explore this further in the following code block.
+
+```{r analysis_2}
+
+locations %>%
+  filter(ownership != "NA") %>%
+  group_by(ownership) %>%
+  summarize(mean_A=mean(A)) %>%
+  ggplot(mapping=aes(x=ownership, y=mean_A)) +
+    geom_bar(stat="identity") +
+    labs(title = "'A' grades and ownership type")
+
+locations %>%
+  filter(ownership != "NA") %>%
+  group_by(ownership) %>%
+  summarize(meanB=mean(B)) %>%
+  ggplot(mapping=aes(x=ownership, y=meanB)) +
+    geom_bar(stat="identity") +
+    labs(title = "'B' grades and ownership type")
+
+locations %>%
+  filter(ownership != "NA") %>%
+  group_by(ownership) %>%
+  summarize(meanC=mean(C)) %>%
+  ggplot(mapping=aes(x=ownership, y=meanC)) +
+    geom_bar(stat="identity") +
+    labs(title = "'C' grades and ownership type")
+
+
+```
+
+  Here we can see clearly that PROFIT-CORPORATION and LIMITED LIABILITY locations have a much higher average level of reports for grades A and B, and that NON-PROFIT locations have a lower average level of reports for A, B, and C level grades. Interestingly, 'OTHER' type ownership locations have high level of average 'A' type grade reports, but the lowest level of average 'C' type grade reports. 
+
+```{r analysis_3}
+
+locations %>%
+  filter(ownership != "NA") %>%
+  ggplot(aes(x=factor(ownership), y=A)) +
+    geom_violin() +
+    labs(title="A rating citations 2014-present over ownership type",
+         x = "ownership type",
+         y = "number of A citations")
+
+locations %>%
+  filter(ownership != "NA") %>%
+  ggplot(aes(x=factor(ownership), y=B)) +
+    geom_violin() +
+    labs(title="B rating citations 2014-present over ownership type",
+         x = "ownership type",
+         y = "number of B citations")
+
+locations %>%
+  filter(ownership != "NA") %>%
+  ggplot(aes(x=factor(ownership), y=C)) +
+    geom_violin() +
+    labs(title="C rating citations 2014-present over ownership type",
+         x = "ownership type",
+         y = "number of C citations")
+
+locations %>%
+  filter(ownership != "NA") %>%
+  ggplot(aes(x=factor(ownership), y=E)) +
+    geom_violin() +
+    labs(title="E rating citations 2014-present over ownership type",
+         x = "ownership type",
+         y = "number of E citations")
+
+
+z <- 1
+while(z < nrow(locations)) { #count all the grades
+  count <- 0
+  count <- count + locations[z,'A']
+  count <- count + locations[z,'B']
+  count <- count + locations[z,'C']
+  count <- count + locations[z,'D']
+  count <- count + locations[z,'E']
+  locations[z,'allgrades'] <- count
+  z <- z + 1
+}
+
+locations %>%
+  filter(ownership != "NA") %>%
+  ggplot(aes(x=factor(ownership), y=allgrades)) +
+    geom_violin() +
+    labs(title="all rating citations 2014-present over ownership type",
+         x = "ownership type",
+         y = "number of citations")
+
+
+
+```
+
+Potential harm to the resident(s)   - A/B
+Actutal harm to the resident(s)     - C/D
+Life threatening to the resident(s) - E
+
+  With these violin plots we can see that the majority of locations have very little to no problems, and that there is a small number of locations with a very high concentration of citation reports. This is good news for the purposes of avoiding these 'problem' locations when looking for a retirement home.
+  
+  However perhaps we are not concerned with A and B citations in and of themselves- after all, these are only related to 'potential harm to actual residents', right? This brings up an important question- how does the frequency of A and B citations relate to probability of having an E-rating citation?
+  
+```{r analysis_4}
+lm_all <- lm(E~A+B+D+C, data=locations)
+tidy(lm_all)
+``` 
+  The above results seem to show that there is a statistically significant relationship between the number of grade C or D citations and the chances of having an E grade citation. Intiuitively this makes sense- a location that is more likely to have been reported for having caused harm to residents is probably more likely to have caused life threatening harm as well.
+  
+  
+```{r analysis_5}
+z <- 1
+while(z <= nrow(locations)) {
+  if(locations[z,"E"] > 0) {
+    locations[z,"hasE"] <- "yes"
+  } else {
+    locations[z,"hasE"] <- "no"
+  }
+  z <- z + 1
+} #add categorical variable for presence of E grade ratings
+
+locations %>%
+  ggplot(aes(x=hasE, y=allgrades)) +
+    geom_violin() +
+    labs(title="all citations 2014-present for locations with and without E ratings",
+         y = "number of citations",
+         x = "E grades present")
+``` 
+  The above plot seems to show that for locations that do have grade E ratings they are more likely to have a higher number of citations than those without, although there are still a fair bulk that are within normal amounts of citations.
+  
+  Overall the analysis seems to prove that NON-PROFIT locations come with the lowest citations, whereas PROFIT-CORPORATION locations have the highest number of citations, and there is a strong relationship between the number of C or D citations and E level citations. The violin plots appear to show that there is a concentration of locations with very high rates of citations, indicating that there are in fact 'problem' locations that can be avoided in order to improve chances of finding a good elderly care home.
+  
+  
+  
+##**Location Map with Leaflet**
+
+  In this section we will go about creating a leaflet map that will allow us to look through locations and their information.
+  
+  To begin we will need to a little bit more scraping in order to find the latitude and longitude coordinates of these locations. Luckily, Google Maps includes the latitude and longitude in their search results. We will input the addresses we scraped from each location into Google Maps and scrape the results. For whatever reason, likely due to some stochasticity in the behavior of Google's algorithms, querying once tends to only yield results roughly 65% of the time. By querying four times for each location we can dramatically minimize the number of locations with no latitude/longitude data.
+
+
+```{r smaller_scrape, cache=FALSE}
+require(geonames)
+
+geocodeAdddress <- function(address) { #returns latitude and longitude using google maps
+  require(RJSONIO)
+  url <- "http://maps.google.com/maps/api/geocode/json?address="
+  url <- URLencode(paste(url, address, "&sensor=false", sep = ""))
+  x <- fromJSON(url, simplify = FALSE)
+  if (x$status == "OK") {
+    out <- c(x$results[[1]]$geometry$location$lng,
+             x$results[[1]]$geometry$location$lat)
+  } else {
+    out <- NA
+  }
+  Sys.sleep(0.2)  # API only allows 5 requests per second
+  out
+}
+
+
+print(nrow(locations))
+z <- 1
+while(z <= nrow(locations)) {
+  tries <- 1
+  found <- FALSE
+  while(!found & tries <= 4) { #try four times
+    address <- (strsplit(locations[z, "demographies....demographies"], "\nTelephone: "))[[1]][1]
+    latlong <- geocodeAdddress(address)
+    locations[z,"long"] <- latlong[1]
+    locations[z,"lat"] <- latlong[2]
+    if(!is.na(locations[z,"lat"]))
+    {
+      found <- TRUE
+    }
+    tries <- tries + 1
+  }
+  z <- z + 1
+}
+
+```
+
+  Now we will create the popup content that will be displayed on the map using a lot of string manipulation. When we click on icons on our map we will see the name of the location which will also contain a hyperlink to the location's page in the database. We will display the address of the location, the ownership type, the number of beds, and the total citations since 2014 of the location. Finally we will show the number of A, B, C, D, and E citations since 2014.
+
+```{r prepare_data}
+  locations$numericLAT <- as.numeric(locations$lat)
+  locations$numericLONG <- as.numeric(locations$long) # make sure they're numeric
+  
+  z <- 1
+  while(z <= nrow(locations)) { #create pop-up content
+    address <- (strsplit(locations[z, "demographies....demographies"], "\nTelephone: "))[[1]][1]
+    address <- (strsplit(address, "\n"))
+    
+    content <- paste(
+      sprintf("<b><a href='%s'>%s</a><br></b>", locations[z,"tophrefs....hrefs"], locations[z,"names....names"]),
+      sprintf("%s<br>", address[[1]][1]),
+      sprintf("%s<br>", address[[1]][2]),
+      sprintf("%s<br>", address[[1]][3]),
+      sprintf("Ownership Type: %s<br>", locations[z,"ownership"]),
+      sprintf("Number of Beds: %s<br>", locations[z,"beds"]),
+      sprintf("Total Citations: %s<br>", locations[z,"allgrades"]),
+      sprintf("A:%s B:%s C:%s D:%s E:%s<br>", 
+              locations[z,"A"], locations[z,"B"], locations[z,"C"], locations[z,"D"], locations[z,"E"])
+      )
+    
+    locations[z, 'summary'] <- content
+    z <- z + 1
+  }
+  
+head(locations)
+```
+
+  Below we will create the icons for the map and then finally create the leaflet map. For this we will import the leaflet and the htmltools package.
+
+```{r create_map}
+library(leaflet)
+library(leaflet.extras)
+library(htmltools)
+
+
+houseIcon <- makeIcon( 
+  iconUrl = "https://cdn2.iconfinder.com/data/icons/pittogrammi/142/65-512.png",
+  iconWidth = 20, iconHeight = 20,
+  iconAnchorX = 0, iconAnchorY = 0
+) #initialize icons
+
+foundlocations <- filter(locations, !is.na(lat))
+ #filter out locations with no lat/long data
+
+colorado_map <- leaflet(foundlocations) %>%
+  addTiles() %>%
+  setView(lat=39.0501, lng=-105.80501	, zoom=7) %>%
+  addMarkers(lng = ~numericLONG, lat = ~numericLAT, icon = houseIcon, popup = ~summary)
+colorado_map
+```
+
+  There are several locations that google invariably provides incorrect coordinates on which are located far outside of Colorado, however they still have correct addresses and information.
+
+  Thank you for reading this tutorial and I hope it provided some insight into how to scrape a large multi-level web database as well as how to analyze variety of quality in elderly homes. I hope I was successful in demonstrating the statistical importance of how they are owned, the distribution of report citations, and in giving a way to browse locations in the state of Colorado through the interactive map. 
+
+
+
